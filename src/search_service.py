@@ -708,7 +708,7 @@ class BaiduSearchProvider(BaseSearchProvider):
     - 专为中文搜索优化
     - 支持AI增强搜索
 
-    文档：https://qianfan.baidubce.com/v2/ai_search/web_search
+    文档：https://cloud.baidu.com/doc/qianfan-api/s/Wmbq4z7e5
     """
 
     API_ENDPOINT = "https://qianfan.baidubce.com/v2/ai_search/web_search"
@@ -719,9 +719,8 @@ class BaiduSearchProvider(BaseSearchProvider):
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行百度智能搜索"""
         try:
-            # 请求头
+            # 请求头 - 百度API使用API Key鉴权
             headers = {
-                'Authorization': f'Bearer {api_key}',
                 'Content-Type': 'application/json'
             }
 
@@ -770,9 +769,9 @@ class BaiduSearchProvider(BaseSearchProvider):
                 }
             }
 
-            # 执行搜索（POST 请求）
+            # 执行搜索（POST 请求）- 使用API Key作为查询参数
             response = requests.post(
-                self.API_ENDPOINT,
+                f"{self.API_ENDPOINT}?api_key={api_key}",
                 headers=headers,
                 json=payload,
                 timeout=10
@@ -810,7 +809,7 @@ class BaiduSearchProvider(BaseSearchProvider):
             # 解析搜索结果
             results = []
             
-            # 根据API文档解析响应结构
+            # 根据百度API实际返回格式解析
             if data.get('code') != 0:
                 error_msg = data.get('message', '搜索失败')
                 logger.warning(f"[Baidu] API返回错误: {error_msg}")
@@ -823,25 +822,46 @@ class BaiduSearchProvider(BaseSearchProvider):
                 )
             
             # 解析搜索结果
-            if 'data' in data and 'web' in data['data']:
-                web_results = data['data']['web']
-                logger.debug(f"[Baidu] 解析到 {len(web_results)} 个网页结果")
-                
-                for item in web_results[:max_results]:
-                    # 解析每个结果
-                    title = item.get('title', '')
-                    snippet = item.get('snippet', '')
-                    url = item.get('url', '')
-                    source = self._extract_domain(url)
-                    published_date = item.get('page_time')  # 百度搜索返回的字段名是page_time
+            if 'data' in data:
+                # 检查是否有网页结果
+                if 'web' in data['data']:
+                    web_results = data['data']['web']
+                    logger.debug(f"[Baidu] 解析到 {len(web_results)} 个网页结果")
                     
-                    results.append(SearchResult(
-                        title=title,
-                        snippet=snippet[:500],  # 截取到500字符
-                        url=url,
-                        source=source,
-                        published_date=published_date
-                    ))
+                    for item in web_results[:max_results]:
+                        # 解析每个结果
+                        title = item.get('title', '')
+                        snippet = item.get('snippet', '')
+                        url = item.get('url', '')
+                        source = self._extract_domain(url)
+                        published_date = item.get('page_time')  # 百度搜索返回的字段名是page_time
+                        
+                        results.append(SearchResult(
+                            title=title,
+                            snippet=snippet[:500],  # 截取到500字符
+                            url=url,
+                            source=source,
+                            published_date=published_date
+                        ))
+                elif 'results' in data['data']:
+                    # 备用解析路径，处理其他可能的响应格式
+                    web_results = data['data']['results']
+                    logger.debug(f"[Baidu] 解析到 {len(web_results)} 个结果")
+                    
+                    for item in web_results[:max_results]:
+                        title = item.get('title', '')
+                        snippet = item.get('snippet', '')
+                        url = item.get('url', '')
+                        source = self._extract_domain(url)
+                        published_date = item.get('page_time')
+                        
+                        results.append(SearchResult(
+                            title=title,
+                            snippet=snippet[:500],
+                            url=url,
+                            source=source,
+                            published_date=published_date
+                        ))
 
             logger.info(f"[Baidu] 成功解析 {len(results)} 条结果")
 
@@ -875,6 +895,8 @@ class BaiduSearchProvider(BaseSearchProvider):
         except Exception as e:
             error_msg = f"未知错误: {str(e)}"
             logger.error(f"[Baidu] {error_msg}")
+            import traceback
+            logger.debug(f"异常堆栈: {traceback.format_exc()}")
             return SearchResponse(
                 query=query,
                 results=[],
@@ -888,6 +910,7 @@ class BaiduSearchProvider(BaseSearchProvider):
         try:
             if response.headers.get('content-type', '').startswith('application/json'):
                 error_data = response.json()
+                logger.debug(f"[Baidu] 错误响应: {error_data}")
                 if 'message' in error_data:
                     return error_data['message']
                 if 'error' in error_data:
