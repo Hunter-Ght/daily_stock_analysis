@@ -728,15 +728,11 @@ class BaiduSearchProvider(BaseSearchProvider):
             # 确定时间范围参数
             page_time = {}
             if days > 0:
-                # 计算时间范围（过去 days 天）
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days)
-                
-                # 格式化为 ISO 8601 日期字符串
-                page_time['gte'] = start_date.strftime('%Y-%m-%d')
-                page_time['lte'] = end_date.strftime('%Y-%m-%d')
+                # 按照API文档格式设置时间范围（使用相对时间格式）
+                page_time['gte'] = f"now-{days}d/d"
+                page_time['lte'] = "now/d"
 
-            # 请求参数
+            # 请求参数 - 严格按照API文档格式
             payload = {
                 "messages": [
                     {
@@ -750,15 +746,20 @@ class BaiduSearchProvider(BaseSearchProvider):
                         "top_k": min(max_results, 50)
                     },
                     {
-                        "type": "image",
-                        "top_k": 30
+                        "type": "video",
+                        "top_k": 0
                     },
                     {
-                        "type": "video",
-                        "top_k": 10
+                        "type": "image",
+                        "top_k": 0
+                    },
+                    {
+                        "type": "aladdin",
+                        "top_k": 0
                     }
                 ],
                 "edition": "standard",
+                "search_source": "baidu_search_v2",
                 "search_filter": {
                     "match": {
                         "site": []
@@ -766,8 +767,7 @@ class BaiduSearchProvider(BaseSearchProvider):
                     "range": {
                         "page_time": page_time
                     }
-                },
-                "search_recency_filter": "noTimeLimit" if not page_time else "custom"
+                }
             }
 
             # 执行搜索（POST 请求）
@@ -810,50 +810,38 @@ class BaiduSearchProvider(BaseSearchProvider):
             # 解析搜索结果
             results = []
             
-            # 打印原始响应，用于调试
-            logger.debug(f"[Baidu] 完整响应数据: {data}")
+            # 根据API文档解析响应结构
+            if data.get('code') != 0:
+                error_msg = data.get('message', '搜索失败')
+                logger.warning(f"[Baidu] API返回错误: {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg
+                )
             
-            # 解析网页搜索结果
-            # 百度搜索API返回的数据结构可能与预期不同，需要灵活解析
-            if 'data' in data:
-                # 尝试解析可能的网页结果字段
-                if 'web' in data['data']:
-                    web_results = data['data']['web']
-                    logger.debug(f"[Baidu] 解析到 {len(web_results)} 个网页结果")
-                    for item in web_results[:max_results]:
-                        results.append(SearchResult(
-                            title=item.get('title', ''),
-                            snippet=item.get('snippet', '')[:500],  # 截取到500字符
-                            url=item.get('url', ''),
-                            source=self._extract_domain(item.get('url', '')),
-                            published_date=item.get('published_date')
-                        ))
+            # 解析搜索结果
+            if 'data' in data and 'web' in data['data']:
+                web_results = data['data']['web']
+                logger.debug(f"[Baidu] 解析到 {len(web_results)} 个网页结果")
                 
-                # 如果没有直接的web字段，尝试其他可能的字段名
-                elif 'results' in data['data']:
-                    # 可能的字段名：results, items, contents等
-                    search_results = data['data']['results']
-                    logger.debug(f"[Baidu] 从 'results' 字段解析到 {len(search_results)} 个结果")
-                    for item in search_results[:max_results]:
-                        results.append(SearchResult(
-                            title=item.get('title', ''),
-                            snippet=item.get('snippet', '')[:500],  # 截取到500字符
-                            url=item.get('url', ''),
-                            source=self._extract_domain(item.get('url', '')),
-                            published_date=item.get('published_date')
-                        ))
-            else:
-                # 可能的响应格式：直接返回results或其他字段
-                if 'results' in data:
-                    logger.debug(f"[Baidu] 直接从根字段解析到 {len(data['results'])} 个结果")
-                    for item in data['results'][:max_results]:
-                        results.append(SearchResult(
-                            title=item.get('title', ''),
-                            snippet=item.get('snippet', '')[:500],
-                            url=item.get('url', ''),
-                            source=self._extract_domain(item.get('url', '')),
-                            published_date=item.get('published_date')
-                        ))
+                for item in web_results[:max_results]:
+                    # 解析每个结果
+                    title = item.get('title', '')
+                    snippet = item.get('snippet', '')
+                    url = item.get('url', '')
+                    source = self._extract_domain(url)
+                    published_date = item.get('page_time')  # 百度搜索返回的字段名是page_time
+                    
+                    results.append(SearchResult(
+                        title=title,
+                        snippet=snippet[:500],  # 截取到500字符
+                        url=url,
+                        source=source,
+                        published_date=published_date
+                    ))
 
             logger.info(f"[Baidu] 成功解析 {len(results)} 条结果")
 
