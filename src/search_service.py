@@ -810,29 +810,50 @@ class BaiduSearchProvider(BaseSearchProvider):
             # 解析搜索结果
             results = []
             
+            # 打印原始响应，用于调试
+            logger.debug(f"[Baidu] 完整响应数据: {data}")
+            
             # 解析网页搜索结果
-            if 'web' in data.get('data', {}):
-                web_results = data.get('data', {}).get('web', [])
-                for item in web_results[:max_results]:
-                    results.append(SearchResult(
-                        title=item.get('title', ''),
-                        snippet=item.get('snippet', '')[:500],  # 截取到500字符
-                        url=item.get('url', ''),
-                        source=self._extract_domain(item.get('url', '')),
-                        published_date=item.get('published_date')
-                    ))
-
-            # 解析图片搜索结果（可选，作为补充）
-            if 'image' in data.get('data', {}):
-                image_results = data.get('data', {}).get('image', [])
-                for item in image_results[:min(max_results//2, 5)]:  # 最多取一半数量的图片结果
-                    results.append(SearchResult(
-                        title=item.get('title', ''),
-                        snippet=f"[图片] {item.get('snippet', '')[:200]}",  # 图片结果标记
-                        url=item.get('url', ''),
-                        source=self._extract_domain(item.get('url', '')),
-                        published_date=item.get('published_date')
-                    ))
+            # 百度搜索API返回的数据结构可能与预期不同，需要灵活解析
+            if 'data' in data:
+                # 尝试解析可能的网页结果字段
+                if 'web' in data['data']:
+                    web_results = data['data']['web']
+                    logger.debug(f"[Baidu] 解析到 {len(web_results)} 个网页结果")
+                    for item in web_results[:max_results]:
+                        results.append(SearchResult(
+                            title=item.get('title', ''),
+                            snippet=item.get('snippet', '')[:500],  # 截取到500字符
+                            url=item.get('url', ''),
+                            source=self._extract_domain(item.get('url', '')),
+                            published_date=item.get('published_date')
+                        ))
+                
+                # 如果没有直接的web字段，尝试其他可能的字段名
+                elif 'results' in data['data']:
+                    # 可能的字段名：results, items, contents等
+                    search_results = data['data']['results']
+                    logger.debug(f"[Baidu] 从 'results' 字段解析到 {len(search_results)} 个结果")
+                    for item in search_results[:max_results]:
+                        results.append(SearchResult(
+                            title=item.get('title', ''),
+                            snippet=item.get('snippet', '')[:500],  # 截取到500字符
+                            url=item.get('url', ''),
+                            source=self._extract_domain(item.get('url', '')),
+                            published_date=item.get('published_date')
+                        ))
+            else:
+                # 可能的响应格式：直接返回results或其他字段
+                if 'results' in data:
+                    logger.debug(f"[Baidu] 直接从根字段解析到 {len(data['results'])} 个结果")
+                    for item in data['results'][:max_results]:
+                        results.append(SearchResult(
+                            title=item.get('title', ''),
+                            snippet=item.get('snippet', '')[:500],
+                            url=item.get('url', ''),
+                            source=self._extract_domain(item.get('url', '')),
+                            published_date=item.get('published_date')
+                        ))
 
             logger.info(f"[Baidu] 成功解析 {len(results)} 条结果")
 
