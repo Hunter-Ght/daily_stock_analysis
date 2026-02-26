@@ -697,6 +697,209 @@ class BochaSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class BaiduSearchProvider(BaseSearchProvider):
+    """
+    百度智能搜索 API 搜索引擎
+
+    特点：
+    - 百度官方智能搜索 API
+    - 支持文本、图片、视频等多种资源类型
+    - 支持时间范围过滤和站点过滤
+    - 专为中文搜索优化
+    - 支持AI增强搜索
+
+    文档：https://qianfan.baidubce.com/v2/ai_search/web_search
+    """
+
+    API_ENDPOINT = "https://qianfan.baidubce.com/v2/ai_search/web_search"
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Baidu")
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        """执行百度智能搜索"""
+        try:
+            # 请求头
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
+
+            # 确定时间范围参数
+            page_time = {}
+            if days > 0:
+                # 计算时间范围（过去 days 天）
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                
+                # 格式化为 ISO 8601 日期字符串
+                page_time['gte'] = start_date.strftime('%Y-%m-%d')
+                page_time['lte'] = end_date.strftime('%Y-%m-%d')
+
+            # 请求参数
+            payload = {
+                "messages": [
+                    {
+                        "content": query,
+                        "role": "user"
+                    }
+                ],
+                "resource_type_filter": [
+                    {
+                        "type": "web",
+                        "top_k": min(max_results, 50)
+                    },
+                    {
+                        "type": "image",
+                        "top_k": 30
+                    },
+                    {
+                        "type": "video",
+                        "top_k": 10
+                    }
+                ],
+                "edition": "standard",
+                "search_filter": {
+                    "match": {
+                        "site": []
+                    },
+                    "range": {
+                        "page_time": page_time
+                    }
+                },
+                "search_recency_filter": "noTimeLimit" if not page_time else "custom"
+            }
+
+            # 执行搜索（POST 请求）
+            response = requests.post(
+                self.API_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+
+            # 检查HTTP状态码
+            if response.status_code != 200:
+                error_msg = self._parse_error(response)
+                logger.warning(f"[Baidu] 搜索失败: {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg
+                )
+
+            # 解析响应
+            try:
+                data = response.json()
+            except ValueError as e:
+                error_msg = f"响应JSON解析失败: {str(e)}"
+                logger.error(f"[Baidu] {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg
+                )
+
+            logger.info(f"[Baidu] 搜索完成，query='{query}'")
+            logger.debug(f"[Baidu] 原始响应: {data}")
+
+            # 解析搜索结果
+            results = []
+            
+            # 解析网页搜索结果
+            if 'web' in data.get('data', {}):
+                web_results = data.get('data', {}).get('web', [])
+                for item in web_results[:max_results]:
+                    results.append(SearchResult(
+                        title=item.get('title', ''),
+                        snippet=item.get('snippet', '')[:500],  # 截取到500字符
+                        url=item.get('url', ''),
+                        source=self._extract_domain(item.get('url', '')),
+                        published_date=item.get('published_date')
+                    ))
+
+            # 解析图片搜索结果（可选，作为补充）
+            if 'image' in data.get('data', {}):
+                image_results = data.get('data', {}).get('image', [])
+                for item in image_results[:min(max_results//2, 5)]:  # 最多取一半数量的图片结果
+                    results.append(SearchResult(
+                        title=item.get('title', ''),
+                        snippet=f"[图片] {item.get('snippet', '')[:200]}",  # 图片结果标记
+                        url=item.get('url', ''),
+                        source=self._extract_domain(item.get('url', '')),
+                        published_date=item.get('published_date')
+                    ))
+
+            logger.info(f"[Baidu] 成功解析 {len(results)} 条结果")
+
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True
+            )
+
+        except requests.exceptions.Timeout:
+            error_msg = "请求超时"
+            logger.error(f"[Baidu] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except requests.exceptions.RequestException as e:
+            error_msg = f"网络请求失败: {str(e)}"
+            logger.error(f"[Baidu] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except Exception as e:
+            error_msg = f"未知错误: {str(e)}"
+            logger.error(f"[Baidu] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+
+    def _parse_error(self, response) -> str:
+        """解析错误响应"""
+        try:
+            if response.headers.get('content-type', '').startswith('application/json'):
+                error_data = response.json()
+                if 'message' in error_data:
+                    return error_data['message']
+                if 'error' in error_data:
+                    return error_data['error']
+                return str(error_data)
+            return response.text[:200]
+        except Exception:
+            return f"HTTP {response.status_code}: {response.text[:200]}"
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            return domain or '未知来源'
+        except Exception:
+            return '未知来源'
+
+
 class BraveSearchProvider(BaseSearchProvider):
     """
     Brave Search 搜索引擎
@@ -909,6 +1112,7 @@ class SearchService:
         tavily_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
+        baidu_keys: Optional[List[str]] = None,
         news_max_age_days: int = 3,
     ):
         """
@@ -930,17 +1134,22 @@ class SearchService:
             self._providers.append(BochaSearchProvider(bocha_keys))
             logger.info(f"已配置 Bocha 搜索，共 {len(bocha_keys)} 个 API Key")
 
-        # 2. Tavily（免费额度更多，每月 1000 次）
+        # 2. Baidu（百度智能搜索，中文搜索首选）
+        if baidu_keys:
+            self._providers.append(BaiduSearchProvider(baidu_keys))
+            logger.info(f"已配置 Baidu 搜索，共 {len(baidu_keys)} 个 API Key")
+
+        # 3. Tavily（免费额度更多，每月 1000 次）
         if tavily_keys:
             self._providers.append(TavilySearchProvider(tavily_keys))
             logger.info(f"已配置 Tavily 搜索，共 {len(tavily_keys)} 个 API Key")
 
-        # 3. Brave Search（隐私优先，全球覆盖）
+        # 4. Brave Search（隐私优先，全球覆盖）
         if brave_keys:
             self._providers.append(BraveSearchProvider(brave_keys))
             logger.info(f"已配置 Brave 搜索，共 {len(brave_keys)} 个 API Key")
 
-        # 4. SerpAPI 作为备选（每月 100 次）
+        # 5. SerpAPI 作为备选（每月 100 次）
         if serpapi_keys:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
@@ -1525,6 +1734,7 @@ def get_search_service() -> SearchService:
             tavily_keys=config.tavily_api_keys,
             brave_keys=config.brave_api_keys,
             serpapi_keys=config.serpapi_keys,
+            baidu_keys=config.baidu_api_keys,
             news_max_age_days=config.news_max_age_days,
         )
     
